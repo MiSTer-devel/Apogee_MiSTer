@@ -224,19 +224,16 @@ wire  [7:0] ram_dout;
 reg   [7:0] ram_din;
 reg  [15:0] ram_addr;
 reg         ram_we;
-reg         ram_rd;
 
 always_comb begin
-	if(hlda) begin
-		ram_din  <= 0;
-		ram_addr <= vid_addr;
-		ram_we   <= 0;
-		ram_rd   <= ~dma_rd_n;
+	if(ioctl_download | ioctl_erasing) begin
+		ram_din  <= ioctl_data;
+		ram_addr <= ioctl_addr[15:0];
+		ram_we   <= ioctl_wr && !ioctl_addr[24:16];
 	end else begin
 		ram_din  <= cpu_o;
 		ram_addr <= addrbus;
 		ram_we   <= ~cpu_wr_n;
-		ram_rd   <= cpu_rd;
 	end
 end
 
@@ -246,42 +243,21 @@ bios   rom(.address({addrbus[11]|startup,addrbus[10:0]}), .clock(clk_sys), .q(ro
 wire [7:0] rom86_o;
 bios86 rom86(.address(addrbus[10:0]), .clock(clk_sys), .q(rom86_o));
 
-reg        dpram_we;
-reg [15:0] dpram_addr;
-reg  [7:0] dpram_din;
+wire [7:0] vid_dout;
 dpram ram
 (
 	.clock(clk_sys),
 
-	.address_a(dpram_addr),
-	.data_a(dpram_din),
-	.wren_a(dpram_we),
+	.address_a(ram_addr),
+	.data_a(ram_din),
+	.wren_a(ram_we),
 	.q_a(ram_dout),
 
-	.address_b(ioctl_addr[15:0]),
-	.data_b(ioctl_data),
-	.wren_b(ioctl_wr && !ioctl_addr[24:16]),
-	.q_b()
+	.address_b(vid_addr),
+	.data_b(0),
+	.wren_b(0),
+	.q_b(vid_dout)
 );
-
-always @(posedge clk_sys) begin
-	reg old_we, old_rd, stb;
-	old_we <= ram_we;
-	old_rd <= ram_rd;
-	
-	dpram_we <= stb;
-
-	stb <= 0;
-	if(~old_we && ram_we) begin
-		stb <= 1;
-		dpram_addr <= ram_addr;
-		dpram_din  <= ram_din;
-	end
-
-	if(~old_rd && ram_rd) begin
-		dpram_addr <= ram_addr;
-	end
-end
 
 
 assign DDRAM_CLK = clk_sys;
@@ -419,7 +395,7 @@ k580vg75 crt
 	.clk_sys(clk_sys),
 	.ce_pix(ce_pix),
 	.iaddr(addrbus[0]),
-	.idata(hlda ? ram_dout : cpu_o),
+	.idata(hlda ? vid_dout : cpu_o),
 	.odata(crt_o),
 	.iwe_n(~crt_sel | cpu_wr_n),
 	.ird_n(~crt_sel | ~cpu_rd),
