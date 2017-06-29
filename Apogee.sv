@@ -1,16 +1,16 @@
 // ====================================================================
-//                Vector 06C FPGA REPLICA
+//                Apogee BK-01 FPGA REPLICA
 //
-//            Copyright (C) 2016 - 2017 Sorgelig
+//            Copyright (C) 2016,2017 Sorgelig
 //
 // This core is distributed under modified BSD license. 
 // For complete licensing information see LICENSE.TXT.
 // -------------------------------------------------------------------- 
 //
-// An open implementation of Vector 06C home computer
+// An open implementation of Apogee BK-01 home computer
 //
-// Based on code from Dmitry Tselikov and Viacheslav Slavinsky
-// 
+// Based on code from Dmitry Tselikov
+//
 
 module emu
 (
