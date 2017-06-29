@@ -92,7 +92,8 @@ assign VIDEO_ARX = status[8] ? 8'd16 : 8'd4;
 assign VIDEO_ARY = status[8] ? 8'd9  : 8'd3;
 assign CLK_VIDEO = clk_sys;
 
-assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = 0;
+assign {SDRAM_A, SDRAM_BA, SDRAM_CLK, SDRAM_CKE, SDRAM_DQML, SDRAM_DQMH, SDRAM_nWE, SDRAM_nCAS, SDRAM_nRAS, SDRAM_nCS} = 6'b111111;
+assign SDRAM_DQ = {16{1'bZ}};
 
 ///////////////////   HPS I/O   //////////////////
 wire [31:0] status;
@@ -100,6 +101,7 @@ wire  [1:0] buttons;
 wire        forced_scandoubler;
 wire        ps2_kbd_clk, ps2_kbd_data;
 
+wire        ioctl_wait;
 wire        ioctl_wr;
 wire [24:0] ioctl_addr;
 wire  [7:0] ioctl_data;
@@ -121,7 +123,7 @@ localparam CONF_STR =
 	"-;",
 	"O4,CPU speed,Normal,Double;",
 	"T6,Reset;",
-	"V,v2.50.",`BUILD_DATE
+	"V,v2.60.",`BUILD_DATE
 };
 
 hps_io #(.STRLEN(($size(CONF_STR)>>3))) hps_io
@@ -141,6 +143,7 @@ hps_io #(.STRLEN(($size(CONF_STR)>>3))) hps_io
 	.ioctl_wr(ioctl_wr),
 	.ioctl_addr(ioctl_addr),
 	.ioctl_dout(ioctl_data),
+	.ioctl_wait(ioctl_wait),
 
    .ps2_kbd_clk(ps2_kbd_clk),
    .ps2_kbd_data(ps2_kbd_data),
@@ -168,7 +171,6 @@ pll pll
 	.refclk(CLK_50M),
 	.rst(0),
 	.outclk_0(clk_sys),
-	.outclk_1(SDRAM_CLK),
 	.locked(locked)
 );
 
@@ -196,18 +198,23 @@ end
 
 ////////////////////   RESET   ////////////////////
 reg       reset; // = 1;
-wire      ext_reset = status[0] | status[6] | buttons[1] | reset_key[0];
+reg       sys_ready = 0;
+wire      reset_req = ~sys_ready | status[6] | buttons[1] | reset_key[0] | ioctl_download | ioctl_erasing;
 
 always @(posedge clk_sys) begin
-	integer   initRESET = 100000000;
 	reg [3:0] reset_cnt;
+	reg old_rst;
+	
+	old_rst <= status[0];
+	if(old_rst & ~status[0]) sys_ready <= 1;
 
-	if ((!ext_reset && reset_cnt==4'd14) && !initRESET && !ioctl_download && !ioctl_erasing)
-		reset <= 0;
-	else begin
-		if(initRESET && !ioctl_download) initRESET <= initRESET - 1;
+	if(reset_req) begin
 		reset <= 1;
-		reset_cnt <= reset_cnt+4'd1;
+		reset_cnt <= 0;
+	end else if(~&reset_cnt) begin
+		reset_cnt <= reset_cnt + 1'd1;
+	end else begin
+		reset <= 0;
 	end
 end
 
@@ -215,50 +222,23 @@ end
 ////////////////////   MEM   ////////////////////
 wire  [7:0] ram_dout;
 reg   [7:0] ram_din;
-reg  [24:0] ram_addr;
+reg  [15:0] ram_addr;
 reg         ram_we;
 reg         ram_rd;
 
 always_comb begin
-	casex({ioctl_download | ioctl_erasing, hlda})
-		2'b1X:
-			begin
-				ram_din  <= ioctl_data;
-				ram_addr <= ioctl_addr;
-				ram_we   <= ioctl_wr;
-				ram_rd   <= 0;
-			end
-		2'b01:
-			begin
-				ram_din  <= 0;
-				ram_addr <= vid_addr;
-				ram_we   <= 0;
-				ram_rd   <= !dma_rd_n;
-			end
-		2'b00:
-			begin
-				ram_din  <= cpu_o;
-				ram_addr <= addr;
-				ram_we   <= !cpu_wr_n && !ppa2_a_acc;
-				ram_rd   <= cpu_rd;
-			end
-	endcase
+	if(hlda) begin
+		ram_din  <= 0;
+		ram_addr <= vid_addr;
+		ram_we   <= 0;
+		ram_rd   <= ~dma_rd_n;
+	end else begin
+		ram_din  <= cpu_o;
+		ram_addr <= addrbus;
+		ram_we   <= ~cpu_wr_n;
+		ram_rd   <= cpu_rd;
+	end
 end
-
-sdram ram
-( 
-	.*,
-	.clk(clk_sys),
-	.init(!locked),
-	.dout(ram_dout),
-	.din(ram_din),
-	.addr(ram_addr),
-	.we(ram_we),
-	.rd(ram_rd),
-	.ready()
-);
-
-wire [24:0] addr = ppa2_a_acc ? {3'b100, extaddr} : addrbus;
 
 wire [7:0] rom_o;
 bios   rom(.address({addrbus[11]|startup,addrbus[10:0]}), .clock(clk_sys), .q(rom_o));
@@ -266,7 +246,67 @@ bios   rom(.address({addrbus[11]|startup,addrbus[10:0]}), .clock(clk_sys), .q(ro
 wire [7:0] rom86_o;
 bios86 rom86(.address(addrbus[10:0]), .clock(clk_sys), .q(rom86_o));
 
+reg        dpram_we;
+reg [15:0] dpram_addr;
+reg  [7:0] dpram_din;
+dpram ram
+(
+	.clock(clk_sys),
 
+	.address_a(dpram_addr),
+	.data_a(dpram_din),
+	.wren_a(dpram_we),
+	.q_a(ram_dout),
+
+	.address_b(ioctl_addr[15:0]),
+	.data_b(ioctl_data),
+	.wren_b(ioctl_wr && !ioctl_addr[24:16]),
+	.q_b()
+);
+
+always @(posedge clk_sys) begin
+	reg old_we, old_rd, stb;
+	old_we <= ram_we;
+	old_rd <= ram_rd;
+	
+	dpram_we <= stb;
+
+	stb <= 0;
+	if(~old_we && ram_we) begin
+		stb <= 1;
+		dpram_addr <= ram_addr;
+		dpram_din  <= ram_din;
+	end
+
+	if(~old_rd && ram_rd) begin
+		dpram_addr <= ram_addr;
+	end
+end
+
+
+assign DDRAM_CLK = clk_sys;
+
+wire [7:0] ext_dout;
+wire       ext_ready;
+wire       ext_rd = ~ppa2_sel | cpu_wr_n;
+
+ddram ext_rom
+(
+	.*,
+	.addr((ioctl_download && !ioctl_index) ? ioctl_addr[18:0] : extaddr),
+
+	.din(ioctl_data),
+	.we(ioctl_wr && !ioctl_index),
+
+	.dout(ext_dout),
+	.rd(ext_rd),
+
+	.ready(ext_ready)
+);
+
+assign ioctl_wait = ioctl_download && !ioctl_index && ~ext_ready;
+
+ 
 ////////////////////   CPU   ////////////////////
 wire [15:0] addrbus;
 reg   [7:0] cpu_i;
@@ -328,7 +368,7 @@ k580vm80a cpu
    .pin_din(cpu_i),
    .pin_hold(hrq),
    .pin_hlda(hlda),
-   .pin_ready(1),
+   .pin_ready(ext_ready),
    .pin_wait(),
    .pin_int(cpu_int),
    .pin_inte(inte),
@@ -462,7 +502,6 @@ wire  [7:0] ppa2_c;
 
 reg   [3:0] tm9;
 wire [18:0] extaddr = {tm9, ppa2_c[6:0], ppa2_b};
-wire        ppa2_a_acc = !mode86 && ((addrbus[15:8] == 8'hEE) && (addrbus[1:0] == 2'd0));
 
 always @(posedge clk_sys) begin
 	reg old_c7;
@@ -478,7 +517,7 @@ k580vv55 ppa2
 	.we_n(~ppa2_sel | cpu_wr_n),
 	.idata(cpu_o), 
 	.odata(ppa2_o), 
-	.ipa(ram_dout), 
+	.ipa(ext_dout), 
 	.ipb(ppa2_b), 
 	.opb(ppa2_b), 
 	.ipc(ppa2_c), 
@@ -512,4 +551,74 @@ wire [1:0] sample = ppa1_c[0] + (mode86 & inte) + pit_out0 + pit_out1 + pit_out2
 assign AUDIO_R = {8{sample}};
 assign AUDIO_L = {8{sample}};
  
+endmodule
+
+module dpram
+(
+	input	        clock,
+
+	input  [15:0] address_a,
+	input   [7:0] data_a,
+	input         wren_a,
+	output  [7:0] q_a,
+
+	input  [15:0] address_b,
+	input   [7:0] data_b,
+	input         wren_b,
+	output  [7:0] q_b
+);
+
+altsyncram	altsyncram_component (
+			.address_a (address_a),
+			.address_b (address_b),
+			.clock0 (clock),
+			.data_a (data_a),
+			.data_b (data_b),
+			.wren_a (wren_a),
+			.wren_b (wren_b),
+			.q_a (q_a),
+			.q_b (q_b),
+			.aclr0 (1'b0),
+			.aclr1 (1'b0),
+			.addressstall_a (1'b0),
+			.addressstall_b (1'b0),
+			.byteena_a (1'b1),
+			.byteena_b (1'b1),
+			.clock1 (1'b1),
+			.clocken0 (1'b1),
+			.clocken1 (1'b1),
+			.clocken2 (1'b1),
+			.clocken3 (1'b1),
+			.eccstatus (),
+			.rden_a (1'b1),
+			.rden_b (1'b1));
+defparam
+	altsyncram_component.address_reg_b = "CLOCK0",
+	altsyncram_component.clock_enable_input_a = "BYPASS",
+	altsyncram_component.clock_enable_input_b = "BYPASS",
+	altsyncram_component.clock_enable_output_a = "BYPASS",
+	altsyncram_component.clock_enable_output_b = "BYPASS",
+	altsyncram_component.indata_reg_b = "CLOCK0",
+	altsyncram_component.intended_device_family = "Cyclone V",
+	altsyncram_component.lpm_type = "altsyncram",
+	altsyncram_component.numwords_a = 65536,
+	altsyncram_component.numwords_b = 65536,
+	altsyncram_component.operation_mode = "BIDIR_DUAL_PORT",
+	altsyncram_component.outdata_aclr_a = "NONE",
+	altsyncram_component.outdata_aclr_b = "NONE",
+	altsyncram_component.outdata_reg_a = "UNREGISTERED",
+	altsyncram_component.outdata_reg_b = "UNREGISTERED",
+	altsyncram_component.power_up_uninitialized = "FALSE",
+	altsyncram_component.read_during_write_mode_mixed_ports = "DONT_CARE",
+	altsyncram_component.read_during_write_mode_port_a = "NEW_DATA_NO_NBE_READ",
+	altsyncram_component.read_during_write_mode_port_b = "NEW_DATA_NO_NBE_READ",
+	altsyncram_component.widthad_a = 16,
+	altsyncram_component.widthad_b = 16,
+	altsyncram_component.width_a = 8,
+	altsyncram_component.width_b = 8,
+	altsyncram_component.width_byteena_a = 1,
+	altsyncram_component.width_byteena_b = 1,
+	altsyncram_component.wrcontrol_wraddress_reg_b = "CLOCK0";
+
+
 endmodule
