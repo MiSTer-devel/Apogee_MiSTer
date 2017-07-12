@@ -28,7 +28,9 @@
 // clk_ps2 = CLK_SYS/(PS2DIV*2)
 //
 
-module hps_io #(parameter STRLEN=0, PS2DIV=1000, WIDE=0) // WIDE=1 for 16 bit file I/O
+// WIDE=1 for 16 bit file I/O
+// VDNUM 1-4
+module hps_io #(parameter STRLEN=0, PS2DIV=1000, WIDE=0, VDNUM=1)
 (
 	input             clk_sys,
 	inout      [37:0] HPS_BUS,
@@ -36,8 +38,8 @@ module hps_io #(parameter STRLEN=0, PS2DIV=1000, WIDE=0) // WIDE=1 for 16 bit fi
 	// parameter STRLEN and the actual length of conf_str have to match
 	input [(8*STRLEN)-1:0] conf_str,
 
-	output reg  [7:0] joystick_0,
-	output reg  [7:0] joystick_1,
+	output reg [15:0] joystick_0,
+	output reg [15:0] joystick_1,
 	output reg [15:0] joystick_analog_0,
 	output reg [15:0] joystick_analog_1,
 
@@ -47,32 +49,36 @@ module hps_io #(parameter STRLEN=0, PS2DIV=1000, WIDE=0) // WIDE=1 for 16 bit fi
 	output reg [31:0] status,
 
 	// SD config
-	input             sd_conf,
-	output            img_mounted, // signaling that new image has been mounted
-	output reg [63:0] img_size,    // size of image in bytes
+	output reg [VD:0] img_mounted,  // signaling that new image has been mounted
+	output reg        img_readonly, // mounted as read only. valid only for active bit in img_mounted
+	output reg [63:0] img_size,     // size of image in bytes. valid only for active bit in img_mounted
 
 	// SD block level access
 	input      [31:0] sd_lba,
-	input             sd_rd,
-	input             sd_wr,
+	input      [VD:0] sd_rd,       // only single sd_rd can be active at any given time
+	input      [VD:0] sd_wr,       // only single sd_wr can be active at any given time
 	output reg        sd_ack,
+	
+	// do not use in new projects.
+	// CID and CSD are fake except CSD image size field.
+	input             sd_conf,
 	output reg        sd_ack_conf,
 
 	// SD byte level access. Signals for 2-PORT altsyncram.
-	output reg [FIOAWIDTH:0] sd_buff_addr,
-	output reg [FIODWIDTH:0] sd_buff_dout,
-	input      [FIODWIDTH:0] sd_buff_din,
-	output reg               sd_buff_wr,
+	output reg [AW:0] sd_buff_addr,
+	output reg [DW:0] sd_buff_dout,
+	input      [DW:0] sd_buff_din,
+	output reg        sd_buff_wr,
 
 	// ARM -> FPGA download
-	input                    ioctl_force_erase,
-	output reg               ioctl_erasing = 0,  // signal indicating an active erase
-	output reg               ioctl_download = 0, // signal indicating an active download
-	output reg         [7:0] ioctl_index,        // menu index used to upload the file
-	output reg               ioctl_wr,
-	output reg        [24:0] ioctl_addr,         // in WIDE mode address will be incremented by 2
-	output reg [FIODWIDTH:0] ioctl_dout,
-	input                    ioctl_wait,
+	input             ioctl_force_erase,
+	output reg        ioctl_erasing = 0,  // signal indicating an active erase
+	output reg        ioctl_download = 0, // signal indicating an active download
+	output reg  [7:0] ioctl_index,        // menu index used to upload the file
+	output reg        ioctl_wr,
+	output reg [24:0] ioctl_addr,         // in WIDE mode address will be incremented by 2
+	output reg [DW:0] ioctl_dout,
+	input             ioctl_wait,
 
 	// ps2 keyboard emulation
 	output            ps2_kbd_clk,
@@ -84,8 +90,9 @@ module hps_io #(parameter STRLEN=0, PS2DIV=1000, WIDE=0) // WIDE=1 for 16 bit fi
 	output reg        ps2_mouse_data
 );
 
-localparam FIODWIDTH = (WIDE) ? 15 : 7;
-localparam FIOAWIDTH = (WIDE) ?  7 : 8;
+localparam DW = (WIDE) ? 15 : 7;
+localparam AW = (WIDE) ?  7 : 8;
+localparam VD = VDNUM-1;
 
 wire        io_wait  = ioctl_wait;
 wire        io_enable= |HPS_BUS[35:34];
@@ -99,9 +106,6 @@ assign HPS_BUS[36]   = clk_sys;
 assign HPS_BUS[32]   = io_wide;
 assign HPS_BUS[15:0] = io_dout;
 
-reg    mount_strobe = 0;
-assign img_mounted  = mount_strobe;
-
 reg [7:0] cfg;
 assign buttons = cfg[1:0];
 //cfg[2] - vga_scaler handled in sys_top
@@ -110,7 +114,21 @@ assign forced_scandoubler = cfg[4];
 //cfg[5] - ypbpr handled in sys_top
 
 // command byte read by the io controller
-wire [15:0] sd_cmd = {8'h00, 4'h5, sd_conf, 1'b1, sd_wr, sd_rd };
+wire [15:0] sd_cmd = 
+{
+	2'b00,
+	(VDNUM>=4) ? sd_wr[3] : 1'b0,
+	(VDNUM>=3) ? sd_wr[2] : 1'b0,
+	(VDNUM>=2) ? sd_wr[1] : 1'b0,
+
+	(VDNUM>=4) ? sd_rd[3] : 1'b0,
+	(VDNUM>=3) ? sd_rd[2] : 1'b0,
+	(VDNUM>=2) ? sd_rd[1] : 1'b0,
+	
+	4'h5, sd_conf, 1'b1,
+	sd_wr[0],
+	sd_rd[0]
+};
 
 always@(posedge clk_sys) begin
 	reg [15:0] cmd;
@@ -143,14 +161,14 @@ always@(posedge clk_sys) begin
 				endcase
 
 				sd_buff_addr <= 0;
-				mount_strobe <= 0;
+				img_mounted <= 0;
 			end else begin
 
 				case(cmd)
 					// buttons and switches
 					'h01: cfg        <= io_din[7:0]; 
-					'h02: joystick_0 <= io_din[7:0];
-					'h03: joystick_1 <= io_din[7:0];
+					'h02: joystick_0 <= io_din;
+					'h03: joystick_1 <= io_din;
 
 					// store incoming ps2 mouse bytes 
 					'h04: begin
@@ -187,7 +205,7 @@ always@(posedge clk_sys) begin
 					// send sector IO -> FPGA
 					// flag that download begins
 					'h17: begin
-							sd_buff_dout <= io_din[FIODWIDTH:0];
+							sd_buff_dout <= io_din[DW:0];
 							b_wr <= 1;
 						end
 
@@ -208,7 +226,10 @@ always@(posedge clk_sys) begin
 						end
 
 					// notify image selection
-					'h1c: mount_strobe <= 1;
+					'h1c: begin
+							img_mounted  <= io_din[VD:0] ? io_din[VD:0] : 1'b1;
+							img_readonly <= io_din[7];
+						end
 
 					// send image info
 					'h1d: if(byte_cnt<5) img_size[{byte_cnt-1'b1, 4'b0000} +:16] <= io_din;

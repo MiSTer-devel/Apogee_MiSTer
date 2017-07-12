@@ -123,7 +123,7 @@ localparam CONF_STR =
 	"-;",
 	"O4,CPU speed,Normal,Double;",
 	"T6,Reset;",
-	"V,v2.60.",`BUILD_DATE
+	"V,v2.61.",`BUILD_DATE
 };
 
 hps_io #(.STRLEN(($size(CONF_STR)>>3))) hps_io
