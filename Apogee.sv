@@ -123,7 +123,7 @@ localparam CONF_STR =
 	"-;",
 	"O4,CPU speed,Normal,Double;",
 	"T6,Reset;",
-	"V,v2.61.",`BUILD_DATE
+	"V,v2.62.",`BUILD_DATE
 };
 
 hps_io #(.STRLEN(($size(CONF_STR)>>3))) hps_io
@@ -165,6 +165,7 @@ wire clk_sys;       // 96Mhz
 reg  ce_f1,ce_f2;   // 1.78MHz/3.56MHz
 reg  ce_pix;        // 8MHz
 reg  ce_pit;        // 1.78MHz
+reg  ce_lpf;        // 3.56MHz
 
 pll pll
 (
@@ -191,6 +192,8 @@ always @(negedge clk_sys) begin
 	ce_f1  <= ((cpu_div == 0)  | (turbo & (cpu_div == 27)));
 	ce_f2  <= ((cpu_div == 13) | (turbo & (cpu_div == 40)));
 	ce_pit <=  (cpu_div == 8);
+
+	ce_lpf <= ((cpu_div == 0)  | (cpu_div == 27));
 
 	startup <= reset|(startup&~addrbus[15]);
 end
@@ -522,11 +525,21 @@ k580vi53 pit
 	.out({pit_out2, pit_out1, pit_out0})
 );
 
-wire [1:0] sample = ppa1_c[0] + (mode86 & inte) + pit_out0 + pit_out1 + pit_out2;
+wire [15:0] sample = {{2'b00, {13{ppa1_c[0]}}} + {2'b00, {13{(mode86 & inte)}}} + {2'b00, {13{pit_out0}}} + {2'b00, {13{pit_out1}}} + {2'b00, {13{pit_out2}}}};
 
-assign AUDIO_R = {8{sample}};
-assign AUDIO_L = {8{sample}};
- 
+lpf48k #(15) lpf48k
+(
+	.RESET(0),
+	.CLK(clk_sys),
+	.CE(ce_lpf),
+
+	.ENABLE(1),
+	.IDATA(sample),
+	.ODATA(AUDIO_R)
+);
+
+assign AUDIO_L = AUDIO_R;
+
 endmodule
 
 module dpram
