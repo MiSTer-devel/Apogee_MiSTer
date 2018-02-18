@@ -1,7 +1,7 @@
 // ====================================================================
 //                Apogee BK-01 FPGA REPLICA
 //
-//            Copyright (C) 2016,2017 Sorgelig
+//            Copyright (C) 2016,2018 Sorgelig
 //
 // This core is distributed under modified BSD license. 
 // For complete licensing information see LICENSE.TXT.
@@ -22,7 +22,7 @@ module emu
 	input         RESET,
 
 	//Must be passed to hps_io module
-	inout  [37:0] HPS_BUS,
+	inout  [43:0] HPS_BUS,
 
 	//Base video clock. Usually equals to CLK_SYS.
 	output        CLK_VIDEO,
@@ -44,7 +44,7 @@ module emu
 
 	output        LED_USER,  // 1 - ON, 0 - OFF.
 
-	// b[1]: 0 - LED status is system status ORed with b[0]
+	// b[1]: 0 - LED status is system status OR'd with b[0]
 	//       1 - LED status is controled solely by b[0]
 	// hint: supply 2'b00 to let the system control the LED.
 	output  [1:0] LED_POWER,
@@ -53,7 +53,15 @@ module emu
 	output [15:0] AUDIO_L,
 	output [15:0] AUDIO_R,
 	output        AUDIO_S, // 1 - signed audio samples, 0 - unsigned
+	output  [1:0] AUDIO_MIX, // 0 - no mix, 1 - 25%, 2 - 50%, 3 - 100% (mono)
 	input         TAPE_IN,
+
+	// SD-SPI
+	output        SD_SCK,
+	output        SD_MOSI,
+	input         SD_MISO,
+	output        SD_CS,
+	input         SD_CD,
 
 	//High latency DDR3 RAM interface
 	//Use for non-critical time purposes
@@ -82,9 +90,10 @@ module emu
 	output        SDRAM_nWE
 );
 
-assign AUDIO_S   = 0;
+assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
+assign {SDRAM_DQ, SDRAM_A, SDRAM_BA, SDRAM_CLK, SDRAM_CKE, SDRAM_DQML, SDRAM_DQMH, SDRAM_nWE, SDRAM_nCAS, SDRAM_nRAS, SDRAM_nCS} = 'Z;
 
-assign LED_USER  = ioctl_download | ioctl_erasing;
+assign LED_USER  = filling;
 assign LED_DISK  = 0;
 assign LED_POWER = 0;
 
@@ -92,21 +101,18 @@ assign VIDEO_ARX = status[8] ? 8'd16 : 8'd4;
 assign VIDEO_ARY = status[8] ? 8'd9  : 8'd3;
 assign CLK_VIDEO = clk_sys;
 
-assign {SDRAM_A, SDRAM_BA, SDRAM_CLK, SDRAM_CKE, SDRAM_DQML, SDRAM_DQMH, SDRAM_nWE, SDRAM_nCAS, SDRAM_nRAS, SDRAM_nCS} = 6'b111111;
-assign SDRAM_DQ = {16{1'bZ}};
 
 ///////////////////   HPS I/O   //////////////////
 wire [31:0] status;
 wire  [1:0] buttons;
 wire        forced_scandoubler;
-wire        ps2_kbd_clk, ps2_kbd_data;
+wire [10:0] ps2_key;
 
 wire        ioctl_wait;
 wire        ioctl_wr;
 wire [24:0] ioctl_addr;
 wire  [7:0] ioctl_data;
 wire        ioctl_download;
-wire        ioctl_erasing;
 wire  [7:0] ioctl_index;
 
 `include "build_id.v"
@@ -122,8 +128,8 @@ localparam CONF_STR =
 	"O23,Scandoubler Fx,None,CRT 25%,CRT 50%,CRT 75%;",
 	"-;",
 	"O4,CPU speed,Normal,Double;",
-	"T6,Reset;",
-	"V,v2.62.",`BUILD_DATE
+	"R6,Reset;",
+	"V,v2.63.",`BUILD_DATE
 };
 
 hps_io #(.STRLEN(($size(CONF_STR)>>3))) hps_io
@@ -138,15 +144,13 @@ hps_io #(.STRLEN(($size(CONF_STR)>>3))) hps_io
    .status(status),
 
 	.ioctl_download(ioctl_download),
-	.ioctl_erasing(ioctl_erasing),
 	.ioctl_index(ioctl_index),
 	.ioctl_wr(ioctl_wr),
 	.ioctl_addr(ioctl_addr),
 	.ioctl_dout(ioctl_data),
 	.ioctl_wait(ioctl_wait),
 
-   .ps2_kbd_clk(ps2_kbd_clk),
-   .ps2_kbd_data(ps2_kbd_data),
+   .ps2_key(ps2_key),
 	
 	.ps2_kbd_led_use(0),
 	.ps2_kbd_led_status(0),
@@ -202,7 +206,7 @@ end
 ////////////////////   RESET   ////////////////////
 reg       reset; // = 1;
 reg       sys_ready = 0;
-wire      reset_req = ~sys_ready | status[6] | buttons[1] | reset_key[0] | ioctl_download | ioctl_erasing;
+wire      reset_req = ~sys_ready | status[6] | buttons[1] | reset_key[0] | filling;
 
 always @(posedge clk_sys) begin
 	reg [3:0] reset_cnt;
@@ -229,10 +233,10 @@ reg  [15:0] ram_addr;
 reg         ram_we;
 
 always_comb begin
-	if(ioctl_download | ioctl_erasing) begin
-		ram_din  <= ioctl_data;
-		ram_addr <= ioctl_addr[15:0];
-		ram_we   <= ioctl_wr && !ioctl_addr[24:16];
+	if(filling) begin
+		ram_din  <= fill_data;
+		ram_addr <= fill_addr[15:0];
+		ram_we   <= fill_wr && !fill_addr[24:16];
 	end else begin
 		ram_din  <= cpu_o;
 		ram_addr <= addrbus;
@@ -272,10 +276,10 @@ wire       ext_rd = ~ppa2_sel | cpu_wr_n;
 ddram ext_rom
 (
 	.*,
-	.addr((ioctl_download && !ioctl_index) ? ioctl_addr[18:0] : extaddr),
+	.addr((filling && !ioctl_index) ? fill_addr[18:0] : extaddr),
 
-	.din(ioctl_data),
-	.we(ioctl_wr && !ioctl_index),
+	.din(fill_data),
+	.we(fill_wr && !ioctl_index),
 
 	.dout(ext_dout),
 	.rd(ext_rd),
@@ -440,9 +444,8 @@ keyboard keyboard
 (
 	.clk(clk_sys), 
 	.reset(reset),
-	.downloading(ioctl_erasing & ~status[5]),
-	.ps2_clk(ps2_kbd_clk),
-	.ps2_dat(ps2_kbd_data),
+	.downloading(erasing & ~status[5]),
+	.ps2_key(ps2_key),
 	.addr(~ppa1_a), 
 	.odata(kbd_o), 
 	.shift(kbd_shift),
@@ -539,6 +542,108 @@ lpf48k #(15) lpf48k
 );
 
 assign AUDIO_L = AUDIO_R;
+
+assign AUDIO_S   = 0;
+assign AUDIO_MIX = 0;
+
+/////////////////////////////////////////////////
+
+wire       filling = (ioctl_download || erasing);
+reg        erasing = 0;
+reg        fill_wr;
+reg [24:0] fill_addr;
+reg  [7:0] fill_data;
+
+reg  [24:0] erase_mask;
+wire [24:0] next_erase = (fill_addr + 1'd1) & erase_mask;
+
+wire addr_off = ((ioctl_index == 'h01) || (ioctl_index == 'h41));
+
+always@(posedge clk_sys) begin
+	reg [24:0] addr;
+	reg        wr;
+
+	reg  [5:0] erase_clk_div;
+	reg [24:0] end_addr;
+	reg        erase_trigger = 0;
+
+	reg [15:0] start_addr;
+
+	fill_wr <= wr;
+	wr <= 0;
+
+	if(ioctl_download) begin
+		erasing   <= 0;
+		erase_trigger <= (ioctl_index != 0);
+		
+		if(ioctl_wr) begin
+			if(!ioctl_index) begin
+				fill_addr <= 25'h200000 + ioctl_addr;
+				fill_data <= ioctl_data;
+				wr <= 1;
+			end
+			else begin
+				case(ioctl_addr+addr_off)
+					0: begin
+					   end
+
+					1: begin
+							start_addr[15:8] <= ioctl_data;
+							fill_data <= 8'hC3;
+							fill_addr <= 0;
+							wr   <= 1;
+						end
+						
+					2: begin
+							start_addr[7:0] <= ioctl_data;
+							fill_data <= ioctl_data;
+							fill_addr <= 1;
+							wr   <= 1;
+						end
+
+					3: begin
+							fill_data <= start_addr[15:8];
+							fill_addr <= 2;
+							wr   <= 1;
+						end
+
+					4: begin
+							addr <= start_addr;
+						end
+						
+					default:
+						begin
+							fill_addr <= addr;
+							fill_data <= ioctl_data;
+							addr <= addr + 1'd1;
+							wr   <= 1;
+						end
+				endcase
+			end
+		end
+		
+	end else begin
+	
+		// start erasing
+		if(erase_trigger) begin
+			erase_trigger <= 0;
+			erase_mask    <= 'hFFFF;
+			end_addr      <= start_addr;
+			erase_clk_div <= 1;
+			erasing       <= 1;
+		end else if(erasing) begin
+			erase_clk_div <= erase_clk_div + 1'd1;
+			if(!erase_clk_div) begin
+				if(next_erase == end_addr) erasing <= 0;
+				else begin
+					fill_addr <= next_erase;
+					fill_data <= 0;
+					if(next_erase > 2) wr <= 1;
+				end
+			end
+		end
+	end
+end
 
 endmodule
 

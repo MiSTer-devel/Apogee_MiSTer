@@ -30,7 +30,7 @@
 //
 //	LPF (cut off 48kHz at 3.58MHz)
 
-module lpf48k #(parameter MSB = 0)
+module lpf48k #(parameter MSB = 15)
 (
    input          RESET,
    input          CLK,

@@ -18,8 +18,7 @@ module keyboard
 	input           clk,
 	input           reset,
 	input           downloading,
-	input           ps2_clk,
-	input           ps2_dat,
+	input    [10:0] ps2_key,
 	input     [7:0] addr,
 	output reg[7:0] odata,
 	output    [2:0] shift,
@@ -44,12 +43,9 @@ end
 
 reg  [2:0] c;
 reg  [3:0] r;
-reg        unpress;
-reg  [3:0] prev_clk;
-reg [11:0] shift_reg;
 
-wire[11:0] kdata = {ps2_dat,shift_reg[11:1]};
-wire [7:0] kcode = kdata[9:2];
+wire [7:0] kcode   = {ps2_key[7:0]};
+wire       pressed = ps2_key[9];
 
 always @(*) begin
 	case (kcode)
@@ -185,12 +181,12 @@ reg mshift = 0;
 always @(posedge clk) begin
 	reg old_reset, old_reset_key;
 	reg old_downloading;
+	reg old_stb;
+
+	old_stb <= ps2_key[10];
 	
 	old_reset <= reset;
 	if(!old_reset && reset) begin
-		prev_clk <= 0;
-		shift_reg <= 12'hFFF;
-		unpress <= 0;
 		keystate[0] <= 0;
 		keystate[1] <= 0;
 		keystate[2] <= 0;
@@ -204,32 +200,23 @@ always @(posedge clk) begin
 		keystate[10]<= 0;
 	end else begin
 		if(auto[auto_pos] == 255) begin
-			prev_clk <= {ps2_clk,prev_clk[3:1]};
-			if (prev_clk==4'b1) begin
-				if (kdata[11]==1'b1 && ^kdata[10:2]==1'b1 && kdata[1:0]==2'b1) begin
-					shift_reg <= 12'hFFF;
-					if (kcode==8'h11) malt   <= ~unpress;
-					if (kcode==8'h14) mctrl  <= ~unpress;
-					if (kcode==8'h12) mshift <= ~unpress;
-					if (kcode==8'h59) mshift <= ~unpress;
-					if (kcode==8'h78) reset_key <= (~unpress) ? {malt, mshift, mctrl | mshift | malt} : 3'b0;
-					if (kcode==8'hF0) unpress <= 1'b1;
-					else if(!malt) begin
-						unpress <= 0;
-						if(r!=4'hF) keystate[r][c] <= ~unpress;
-					end else begin
-						unpress <= 0;
-						case(kcode)
-							8'h6B: alt_dir[0] <= ~unpress; // left
-							8'h74: alt_dir[1] <= ~unpress; // right
-							8'h75: alt_dir[2] <= ~unpress; // up
-							8'h72: alt_dir[3] <= ~unpress; // down
-							8'h5A: alt_dir[4] <= ~unpress; // enter - reset
-						 default:;
-						endcase
-					end
+			if (old_stb != ps2_key[10]) begin
+				if (kcode==8'h11) malt   <= pressed;
+				if (kcode==8'h14) mctrl  <= pressed;
+				if (kcode==8'h12) mshift <= pressed;
+				if (kcode==8'h59) mshift <= pressed;
+				if (kcode==8'h78) reset_key <= (pressed) ? {malt, mshift, mctrl | mshift | malt} : 3'b0;
+				if(!malt) begin
+					if(r!=4'hF) keystate[r][c] <= pressed;
 				end else begin
-					shift_reg <= kdata;
+					case(kcode)
+						8'h6B: alt_dir[0] <= pressed; // left
+						8'h74: alt_dir[1] <= pressed; // right
+						8'h75: alt_dir[2] <= pressed; // up
+						8'h72: alt_dir[3] <= pressed; // down
+						8'h5A: alt_dir[4] <= pressed; // enter - reset
+					 default:;
+					endcase
 				end
 			end
 		end else if(auto_strobe) begin
