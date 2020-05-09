@@ -137,6 +137,7 @@ wire [31:0] status;
 wire  [1:0] buttons;
 wire        forced_scandoubler;
 wire [10:0] ps2_key;
+wire [21:0] gamma_bus;
 
 wire        ioctl_wait;
 wire        ioctl_wr;
@@ -170,6 +171,7 @@ hps_io #(.STRLEN(($size(CONF_STR)>>3))) hps_io
 
    .buttons(buttons),
    .forced_scandoubler(forced_scandoubler),
+	.gamma_bus(gamma_bus),
 
    .status(status),
 
@@ -209,7 +211,7 @@ pll pll
 	.locked(locked)
 );
 
-always @(negedge clk_sys) begin
+always @(posedge clk_sys) begin
 	reg [3:0] clk_viddiv;
 	reg [6:0] cpu_div = 0;
 	reg       turbo = 0;
@@ -350,21 +352,21 @@ always_comb begin
 	casex({startup, mode86, addrbus[15:8]})
 
 		// Apogee
-		10'b0011101100: begin cpu_i <= pit_o;   pit_sel  <= 1; end
-		10'b0011101101: begin cpu_i <= ppa1_o;  ppa1_sel <= 1; end
-		10'b0011101110: begin cpu_i <= ppa2_o;  ppa2_sel <= 1; end
-		10'b0011101111: begin cpu_i <= crt_o;   crt_sel  <= 1; end
-		10'b001111XXXX: begin cpu_i <= rom_o;   dma_sel  <= !addrbus[11:8];   end
-		10'b10XXXXXXXX: begin cpu_i <= rom_o;                  end
+		10'b0011101100: begin cpu_i = pit_o;   pit_sel  = 1; end
+		10'b0011101101: begin cpu_i = ppa1_o;  ppa1_sel = 1; end
+		10'b0011101110: begin cpu_i = ppa2_o;  ppa2_sel = 1; end
+		10'b0011101111: begin cpu_i = crt_o;   crt_sel  = 1; end
+		10'b001111XXXX: begin cpu_i = rom_o;   dma_sel  = !addrbus[11:8];   end
+		10'b10XXXXXXXX: begin cpu_i = rom_o;                 end
 
 		// Radio
-		10'b01100XXXXX: begin cpu_i <= ppa1_o;  ppa1_sel <= 1; end
-		10'b0110100XXX: begin cpu_i <= pit_o;   pit_sel  <= 1; end
-		10'b0110101XXX: begin cpu_i <= 0;                      end // sd_o
-		10'b011011XXXX: begin cpu_i <= 0;                      end // ???
-		10'b01110XXXXX: begin cpu_i <= crt_o;   crt_sel  <= 1; end
-		10'b01111XXXXX: begin cpu_i <= rom86_o; dma_sel  <= 1; end
-		10'b11XXXXXXXX: begin cpu_i <= rom86_o;                end
+		10'b01100XXXXX: begin cpu_i = ppa1_o;  ppa1_sel = 1; end
+		10'b0110100XXX: begin cpu_i = pit_o;   pit_sel  = 1; end
+		10'b0110101XXX: begin cpu_i = 0;                     end // sd_o
+		10'b011011XXXX: begin cpu_i = 0;                     end // ???
+		10'b01110XXXXX: begin cpu_i = crt_o;   crt_sel  = 1; end
+		10'b01111XXXXX: begin cpu_i = rom86_o; dma_sel  = 1; end
+		10'b11XXXXXXXX: begin cpu_i = rom86_o;               end
 		
 		default: cpu_i <= ram_dout;
 	endcase
@@ -452,9 +454,10 @@ k580vg75 crt
 assign VGA_SL = status[3:2];
 assign VGA_F1 = 0;
 
-video_mixer #(.HALF_DEPTH(1)) video_mixer
+video_mixer #(.HALF_DEPTH(1), .GAMMA(1)) video_mixer
 (
 	.*,
+	.clk_vid(clk_sys),
 	.ce_pix_out(CE_PIXEL),
 	.scanlines(0),
 	.hq2x(0),
