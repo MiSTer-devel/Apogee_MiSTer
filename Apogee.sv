@@ -32,8 +32,8 @@ module emu
 	output        CE_PIXEL,
 
 	//Video aspect ratio for HDMI. Most retro systems have ratio 4:3.
-	output  [7:0] VIDEO_ARX,
-	output  [7:0] VIDEO_ARY,
+	output [11:0] VIDEO_ARX,
+	output [11:0] VIDEO_ARY,
 
 	output  [7:0] VGA_R,
 	output  [7:0] VGA_G,
@@ -43,6 +43,7 @@ module emu
 	output        VGA_DE,    // = ~(VBlank | HBlank)
 	output        VGA_F1,
 	output  [1:0] VGA_SL,
+	output        VGA_SCALER, // Force VGA scaler
 
 	output        LED_USER,  // 1 - ON, 0 - OFF.
 
@@ -57,9 +58,10 @@ module emu
 	// b[0]: osd button
 	output  [1:0] BUTTONS,
 
+	input         CLK_AUDIO, // 24.576 MHz
 	output [15:0] AUDIO_L,
 	output [15:0] AUDIO_R,
-	output        AUDIO_S, // 1 - signed audio samples, 0 - unsigned
+	output        AUDIO_S,   // 1 - signed audio samples, 0 - unsigned
 	output  [1:0] AUDIO_MIX, // 0 - no mix, 1 - 25%, 2 - 50%, 3 - 100% (mono)
 
 	//ADC
@@ -126,9 +128,13 @@ assign LED_USER  = filling;
 assign LED_DISK  = 0;
 assign LED_POWER = 0;
 assign BUTTONS   = 0;
+assign VGA_SCALER= 0;
 
-assign VIDEO_ARX = status[8] ? 8'd16 : 8'd4;
-assign VIDEO_ARY = status[8] ? 8'd9  : 8'd3;
+wire [1:0] ar = status[7:6];
+
+assign VIDEO_ARX = (!ar) ? 12'd4 : (ar - 1'd1);
+assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
+
 assign CLK_VIDEO = clk_sys;
 
 
@@ -155,11 +161,11 @@ localparam CONF_STR =
 	"O5,Autostart,Yes,No;",
 	"-;",
 	"O1,Color,On,Off;",
-	"O8,Aspect ratio,4:3,16:9;",
+	"O67,Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
 	"O23,Scandoubler Fx,None,CRT 25%,CRT 50%,CRT 75%;",
 	"-;",
 	"O4,CPU speed,Normal,Double;",
-	"R9,Reset;",
+	"R0,Reset;",
 	"V,v",`BUILD_DATE
 };
 
@@ -238,7 +244,7 @@ end
 ////////////////////   RESET   ////////////////////
 reg       reset; // = 1;
 reg       sys_ready = 0;
-wire      reset_req = ~sys_ready | status[6] | buttons[1] | reset_key[0] | filling;
+wire      reset_req = ~sys_ready | status[0] | buttons[1] | reset_key[0] | filling;
 
 always @(posedge clk_sys) begin
 	reg [3:0] reset_cnt;
@@ -564,7 +570,7 @@ k580vi53 pit
 	.out({pit_out2, pit_out1, pit_out0})
 );
 
-wire [15:0] sample = {{2'b00, {13{ppa1_c[0]}}} + {2'b00, {13{(mode86 & inte)}}} + {2'b00, {13{pit_out0}}} + {2'b00, {13{pit_out1}}} + {2'b00, {13{pit_out2}}}};
+wire [15:0] sample = {2'b00, {13{ppa1_c[0]}}} + {2'b00, {13{(mode86 & inte)}}} + {2'b00, {13{pit_out0}}} + {2'b00, {13{pit_out1}}} + {2'b00, {13{pit_out2}}};
 
 lpf48k #(15) lpf48k
 (
